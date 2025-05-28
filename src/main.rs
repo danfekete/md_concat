@@ -33,12 +33,19 @@ fn main() -> io::Result<()> {
     let root_dir = fs::canonicalize(&args.root_dir).map_err(|e| {
         io::Error::new(
             e.kind(),
-            format!("Failed to canonicalize root directory {:?}: {}", args.root_dir, e),
+            format!(
+                "Failed to canonicalize root directory {:?}: {}",
+                args.root_dir, e
+            ),
         )
     })?;
     // Store extensions and excluded directories in HashSets for efficient lookup
     let extensions: HashSet<String> = args.extensions.into_iter().collect();
-    let exclude_dirs: HashSet<String> = args.exclude_dirs.into_iter().filter(|s| !s.is_empty()).collect(); // Filter out empty strings resulting from default_value=""
+    let exclude_dirs: HashSet<String> = args
+        .exclude_dirs
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect(); // Filter out empty strings resulting from default_value=""
 
     println!("Searching in: {}", root_dir.display());
     println!("Including extensions: {:?}", extensions);
@@ -66,20 +73,24 @@ fn main() -> io::Result<()> {
                 if exclude_dirs.contains(dir_name) {
                     // Tell walkdir not to recurse into this directory
                     // Note: This requires walkdir >= 2.4.0 for set_skip_current_dir
-                     if entry.depth() > 0 { // Only skip if not the root itself
+                    if entry.depth() > 0 {
+                        // Only skip if not the root itself
                         // walkdir doesn't have a direct "skip this dir" after finding it easily,
                         // but filtering it out here prevents processing its contents *later*.
                         // A more robust way would be filtering *during* iteration if walkdir offered it directly.
                         // For now, we just skip processing files *within* it by checking the path prefix later.
                         // Let's refine the filtering:
-                         if exclude_dirs.iter().any(|ex_dir| path.components().any(|comp| comp.as_os_str() == ex_dir.as_str())) {
+                        if exclude_dirs.iter().any(|ex_dir| {
+                            path.components()
+                                .any(|comp| comp.as_os_str() == ex_dir.as_str())
+                        }) {
                             // If any component of the path is an excluded dir name, skip.
                             // This isn't perfect as it might exclude /home/user/src/my_target if 'target' is excluded.
                             // A better walkdir filter approach is needed for precise directory skipping.
                             // walkdir's into_iter().filter_entry() is the proper way:
                             // Let's rewrite the loop using filter_entry for correct pruning.
                             // (Rewriting below)
-                         }
+                        }
                     }
                 }
             }
@@ -101,9 +112,12 @@ fn main() -> io::Result<()> {
                     if !is_in_excluded_dir {
                         // Get relative path
                         if let Ok(rel_path) = path.strip_prefix(&root_dir) {
-                             found_files.push(rel_path.to_path_buf());
+                            found_files.push(rel_path.to_path_buf());
                         } else {
-                             eprintln!("Warning: Could not get relative path for {}", path.display());
+                            eprintln!(
+                                "Warning: Could not get relative path for {}",
+                                path.display()
+                            );
                         }
                     }
                 }
@@ -120,15 +134,14 @@ fn main() -> io::Result<()> {
             // Filter out excluded directories *before* recursing into them
             if e.file_type().is_dir() {
                 if let Some(dir_name) = e.file_name().to_str() {
-                     // Check if the directory name itself is excluded (and it's not the root)
+                    // Check if the directory name itself is excluded (and it's not the root)
                     if exclude_dirs.contains(dir_name) && e.depth() > 0 {
-                         return false; // Don't enter this directory
+                        return false; // Don't enter this directory
                     }
                 }
             }
             true // Keep other entries (files, allowed directories)
         });
-
 
     for entry_result in walker {
         let entry = match entry_result {
@@ -146,18 +159,20 @@ fn main() -> io::Result<()> {
             // Check extension
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                 if extensions.contains(ext) {
-                     // Get relative path
+                    // Get relative path
                     if let Ok(rel_path) = path.strip_prefix(&root_dir) {
                         found_files.push(rel_path.to_path_buf());
                     } else {
-                        eprintln!("Warning: Could not get relative path for {}", path.display());
+                        eprintln!(
+                            "Warning: Could not get relative path for {}",
+                            path.display()
+                        );
                         // Fallback: use the absolute path? Or skip? Skipping seems safer.
                     }
                 }
             }
         }
     }
-
 
     // --- Sort Files ---
     found_files.sort();
@@ -173,10 +188,7 @@ fn main() -> io::Result<()> {
         let display_path = rel_path.display(); // Use relative path for display
 
         // Get extension for code block fence
-        let ext = rel_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let ext = rel_path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
         // Write header and open code block
         writeln!(writer, "## {}\n", display_path)?; // Add newline after header
@@ -187,26 +199,32 @@ fn main() -> io::Result<()> {
             Ok(mut input_file) => {
                 let mut buffer = String::new(); // Read as string for simplicity
                 if input_file.read_to_string(&mut buffer).is_ok() {
-                     // Ensure newline before content if file isn't empty
+                    // Ensure newline before content if file isn't empty
                     if !buffer.is_empty() && !buffer.starts_with('\n') {
                         // writeln!(writer)?; // Start content on new line relative to ```
                     }
-                     // Write content, ensure newline before closing fence
+                    // Write content, ensure newline before closing fence
                     write!(writer, "{}", buffer)?;
                     if !buffer.ends_with('\n') {
                         writeln!(writer)?; // Ensure the ``` starts on its own line
                     }
                 } else {
-                    eprintln!("Warning: Failed to read file content (possibly not UTF-8): {}", full_path.display());
-                    write!(writer, "\nError: Could not read file content (e.g., binary or non-UTF-8)")?;
+                    eprintln!(
+                        "Warning: Failed to read file content (possibly not UTF-8): {}",
+                        full_path.display()
+                    );
+                    write!(
+                        writer,
+                        "\nError: Could not read file content (e.g., binary or non-UTF-8)"
+                    )?;
                     writeln!(writer)?; // Ensure newline before closing fence
                 }
             }
             Err(e) => {
                 eprintln!("Error opening file {}: {}", full_path.display(), e);
-                 // Write error message inside code block
+                // Write error message inside code block
                 write!(writer, "\nError: Could not open file: {}", e)?;
-                 writeln!(writer)?; // Ensure newline before closing fence
+                writeln!(writer)?; // Ensure newline before closing fence
             }
         }
 
