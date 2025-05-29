@@ -5,6 +5,91 @@ use std::io::{self, BufWriter, Read, Write};
 use std::path::PathBuf;
 use walkdir::WalkDir;
 
+/// Token counting strategies for different LLMs
+#[derive(Debug, Clone)]
+pub enum TokenCountStrategy {
+    /// GPT-style tokenization (roughly 4 chars per token)
+    Gpt,
+    /// Claude-style tokenization (roughly 3.5 chars per token)
+    Claude,
+    /// Conservative estimate (roughly 3 chars per token)
+    Conservative,
+    /// Character count divided by average word length
+    WordBased,
+}
+
+impl TokenCountStrategy {
+    fn chars_per_token(&self) -> f64 {
+        match self {
+            TokenCountStrategy::Gpt => 4.0,
+            TokenCountStrategy::Claude => 3.5,
+            TokenCountStrategy::Conservative => 3.0,
+            TokenCountStrategy::WordBased => 5.0, // Average word length + space
+        }
+    }
+    
+    fn name(&self) -> &str {
+        match self {
+            TokenCountStrategy::Gpt => "GPT-style",
+            TokenCountStrategy::Claude => "Claude-style", 
+            TokenCountStrategy::Conservative => "Conservative",
+            TokenCountStrategy::WordBased => "Word-based",
+        }
+    }
+}
+
+/// Estimates tokens for multiple LLM strategies and returns a formatted report
+pub fn estimate_tokens_report(char_count: usize, word_count: usize) -> String {
+    let strategies = vec![
+        TokenCountStrategy::Conservative,
+        TokenCountStrategy::Claude,
+        TokenCountStrategy::Gpt,
+        TokenCountStrategy::WordBased,
+    ];
+    
+    let mut report = String::new();
+    report.push_str(&format!("=== Token Count Estimates ===\n"));
+    report.push_str(&format!("Characters: {}\n", char_count));
+    report.push_str(&format!("Words: {}\n\n", word_count));
+    
+    for strategy in strategies {
+        let estimated_tokens = char_count as f64 / strategy.chars_per_token();
+        let token_count = estimated_tokens.ceil() as usize;
+        report.push_str(&format!("{}: ~{} tokens\n", strategy.name(), token_count));
+    }
+    
+    report
+}
+
+/// Incremental token counter to avoid storing all content in memory
+#[derive(Default)]
+pub struct TokenCounter {
+    pub char_count: usize,
+    pub word_count: usize,
+}
+
+impl TokenCounter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    
+    pub fn add_text(&mut self, text: &str) {
+        self.char_count += text.chars().count();
+        self.word_count += text.split_whitespace().count();
+    }
+    
+    pub fn get_token_estimates(&self) -> String {
+        estimate_tokens_report(self.char_count, self.word_count)
+    }
+}
+
+/// Estimates the number of tokens in a text string using the specified strategy
+pub fn estimate_tokens(text: &str, strategy: &TokenCountStrategy) -> usize {
+    let char_count = text.chars().count();
+    let estimated_tokens = char_count as f64 / strategy.chars_per_token();
+    estimated_tokens.ceil() as usize
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct CliArgs {
@@ -74,7 +159,7 @@ fn main() -> io::Result<()> {
     println!("Outputting to: {}", output_file.display());
 
     let mut found_files = Vec::new();
-    let mut processed_dirs = HashSet::new();
+    let mut processed_dirs: HashSet<PathBuf> = HashSet::new();
 
     // Process each input directory
     for input_dir in &valid_input_dirs {
@@ -163,6 +248,7 @@ fn main() -> io::Result<()> {
 
     let output_file_handle = File::create(output_file)?;
     let mut writer = BufWriter::new(output_file_handle);
+    let mut token_counter = TokenCounter::new();
 
     println!("\nConcatenating {} files...", found_files.len());
 
@@ -170,6 +256,13 @@ fn main() -> io::Result<()> {
         let display_path = rel_path.display();
         let ext = rel_path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
+        let header = format!("## {}\n\n", display_path);
+        let code_start = format!("```{}\n", ext);
+        
+        // Count tokens for markdown formatting
+        token_counter.add_text(&header);
+        token_counter.add_text(&code_start);
+        
         writeln!(writer, "## {}\n", display_path)?;
         writeln!(writer, "```{}", ext)?;
 
@@ -177,29 +270,36 @@ fn main() -> io::Result<()> {
             Ok(mut input_file) => {
                 let mut buffer = String::new();
                 if input_file.read_to_string(&mut buffer).is_ok() {
+                    token_counter.add_text(&buffer);
                     write!(writer, "{}", buffer)?;
                     if !buffer.ends_with('\n') {
+                        token_counter.add_text("\n");
                         writeln!(writer)?;
                     }
                 } else {
+                    let error_msg = "\nError: Could not read file content (e.g., binary or non-UTF-8)";
                     eprintln!(
                         "Warning: Failed to read file content (possibly not UTF-8): {}",
                         abs_path.display()
                     );
-                    write!(
-                        writer,
-                        "\nError: Could not read file content (e.g., binary or non-UTF-8)"
-                    )?;
+                    token_counter.add_text(error_msg);
+                    token_counter.add_text("\n");
+                    write!(writer, "{}", error_msg)?;
                     writeln!(writer)?;
                 }
             }
             Err(e) => {
+                let error_msg = format!("\nError: Could not open file: {}", e);
                 eprintln!("Error opening file {}: {}", abs_path.display(), e);
-                write!(writer, "\nError: Could not open file: {}", e)?;
+                token_counter.add_text(&error_msg);
+                token_counter.add_text("\n");
+                write!(writer, "{}", error_msg)?;
                 writeln!(writer)?;
             }
         }
 
+        let code_end = "```\n\n";
+        token_counter.add_text(code_end);
         writeln!(writer, "```\n")?;
     }
 
@@ -210,6 +310,9 @@ fn main() -> io::Result<()> {
         found_files.len(),
         output_file.display()
     );
+
+    // Generate and display token count report
+    println!("\n{}", token_counter.get_token_estimates());
 
     Ok(())
 }
