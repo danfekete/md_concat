@@ -1,7 +1,10 @@
 [package]
 name = "md_concat"
-version = "0.1.0"
-edition = "2021"
+description = "A command-line utility to recursively search directories for files with specified extensions, sort them, and concatenate their contents into a single Markdown file. Each file's content is placed within a fenced code block, labeled with the file's relative path."
+license = "MIT"
+authors = ["Daniel Fekete <dande.fekete@gmail.com>"]
+version = "0.2.0"
+edition = "2024"
 
 [dependencies]
 clap = { version = "4.4", features = ["derive"] } # Use the latest version available
