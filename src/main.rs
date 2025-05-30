@@ -3,7 +3,9 @@ use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Read, Write};
 use std::path::PathBuf;
-use walkdir::WalkDir;
+
+mod gitignore;
+use gitignore::{GitignoreManager, collect_files_with_gitignore};
 
 /// Token counting strategies for different LLMs
 #[derive(Debug, Clone)]
@@ -27,11 +29,11 @@ impl TokenCountStrategy {
             TokenCountStrategy::WordBased => 5.0, // Average word length + space
         }
     }
-    
+
     fn name(&self) -> &str {
         match self {
             TokenCountStrategy::Gpt => "GPT-style",
-            TokenCountStrategy::Claude => "Claude-style", 
+            TokenCountStrategy::Claude => "Claude-style",
             TokenCountStrategy::Conservative => "Conservative",
             TokenCountStrategy::WordBased => "Word-based",
         }
@@ -46,18 +48,18 @@ pub fn estimate_tokens_report(char_count: usize, word_count: usize) -> String {
         TokenCountStrategy::Gpt,
         TokenCountStrategy::WordBased,
     ];
-    
+
     let mut report = String::new();
     report.push_str(&format!("=== Token Count Estimates ===\n"));
     report.push_str(&format!("Characters: {}\n", char_count));
     report.push_str(&format!("Words: {}\n\n", word_count));
-    
+
     for strategy in strategies {
         let estimated_tokens = char_count as f64 / strategy.chars_per_token();
         let token_count = estimated_tokens.ceil() as usize;
         report.push_str(&format!("{}: ~{} tokens\n", strategy.name(), token_count));
     }
-    
+
     report
 }
 
@@ -72,12 +74,12 @@ impl TokenCounter {
     pub fn new() -> Self {
         Self::default()
     }
-    
+
     pub fn add_text(&mut self, text: &str) {
         self.char_count += text.chars().count();
         self.word_count += text.split_whitespace().count();
     }
-    
+
     pub fn get_token_estimates(&self) -> String {
         estimate_tokens_report(self.char_count, self.word_count)
     }
@@ -107,144 +109,97 @@ struct CliArgs {
     /// Comma-separated list of directory names to exclude from search (e.g., "target,.git,build").
     #[arg(long = "exclude-dirs", value_delimiter = ',', default_value = "")]
     exclude_dirs: Vec<String>,
+
+    /// Whether to respect .gitignore files (default: true)
+    #[arg(long = "no-gitignore", action = clap::ArgAction::SetFalse)]
+    respect_gitignore: bool,
+
+    /// Additional gitignore files to consider
+    #[arg(long = "additional-gitignore", value_delimiter = ',')]
+    additional_gitignore_files: Vec<PathBuf>,
 }
 
 fn main() -> io::Result<()> {
     let args = CliArgs::parse();
 
     let output_file = &args.output_file;
-    
+
     // Canonicalize all input directories and deduplicate them
     let mut canonical_dirs = HashSet::new();
     let mut valid_input_dirs = Vec::new();
-    
+
     for input_dir in &args.input_dirs {
         match fs::canonicalize(input_dir) {
             Ok(canonical_path) => {
                 if canonical_dirs.insert(canonical_path.clone()) {
                     valid_input_dirs.push(canonical_path);
+                    println!("Input directory: {}", input_dir.display());
                 } else {
-                    println!("Note: Skipping duplicate directory: {}", input_dir.display());
+                    println!(
+                        "Skipping duplicate directory: {} (same as already included directory)",
+                        input_dir.display()
+                    );
                 }
             }
             Err(e) => {
                 eprintln!(
-                    "Warning: Failed to canonicalize input directory {:?}: {}",
-                    input_dir, e
+                    "Error: Input directory '{}' is not accessible: {}",
+                    input_dir.display(),
+                    e
                 );
+                std::process::exit(1);
             }
         }
     }
 
-    if valid_input_dirs.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "No valid input directories found",
-        ));
-    }
-
+    // Convert extensions to a HashSet for O(1) lookup
     let extensions: HashSet<String> = args.extensions.into_iter().collect();
+    println!("Extensions: {:?}", extensions);
+
+    // Convert exclude_dirs to a HashSet for O(1) lookup, filtering out empty strings
     let exclude_dirs: HashSet<String> = args
         .exclude_dirs
         .into_iter()
         .filter(|s| !s.is_empty())
         .collect();
 
-    println!("Searching in {} directories:", valid_input_dirs.len());
-    for dir in &valid_input_dirs {
-        println!("  - {}", dir.display());
-    }
-    println!("Including extensions: {:?}", extensions);
-    println!("Excluding directories: {:?}", exclude_dirs);
-    println!("Outputting to: {}", output_file.display());
-
-    let mut found_files = Vec::new();
-    let mut processed_dirs: HashSet<PathBuf> = HashSet::new();
-
-    // Process each input directory
-    for input_dir in &valid_input_dirs {
-        // Check if this directory is a subdirectory of any already processed directory
-        let mut skip_dir = false;
-        for processed_dir in &processed_dirs {
-            if input_dir.starts_with(processed_dir) {
-                println!("Note: Skipping {} (already covered by {})", 
-                        input_dir.display(), processed_dir.display());
-                skip_dir = true;
-                break;
-            }
-        }
-        
-        if skip_dir {
-            continue;
-        }
-
-        // Check if any previously processed directory is a subdirectory of current directory
-        processed_dirs.retain(|processed_dir| {
-            if processed_dir.starts_with(input_dir) {
-                println!("Note: Directory {} superseded by {}", 
-                        processed_dir.display(), input_dir.display());
-                false // Remove from processed_dirs
-            } else {
-                true // Keep in processed_dirs
-            }
-        });
-
-        processed_dirs.insert(input_dir.clone());
-
-        // Use filter_entry to properly skip excluded directories during traversal
-        let walker = WalkDir::new(input_dir)
-            .follow_links(false)
-            .into_iter()
-            .filter_entry(|e| {
-                if e.file_type().is_dir() {
-                    if let Some(dir_name) = e.path().file_name().and_then(|n| n.to_str()) {
-                        if exclude_dirs.contains(dir_name) && e.depth() > 0 {
-                            return false;
-                        }
-                    }
-                }
-                true
-            });
-
-        for entry_result in walker {
-            let entry = match entry_result {
-                Ok(entry) => entry,
-                Err(e) => {
-                    eprintln!("Warning: Failed to access entry: {}", e);
-                    continue;
-                }
-            };
-
-            let path = entry.path();
-
-            if entry.file_type().is_file() {
-                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                    if extensions.contains(ext) {
-                        // Use absolute path for deduplication across different input directories
-                        let canonical_file_path = match fs::canonicalize(path) {
-                            Ok(p) => p,
-                            Err(_) => path.to_path_buf(),
-                        };
-                        
-                        // Check if we've already processed this file
-                        if !found_files.iter().any(|(_, abs_path)| abs_path == &canonical_file_path) {
-                            if let Ok(rel_path) = path.strip_prefix(input_dir) {
-                                found_files.push((rel_path.to_path_buf(), canonical_file_path));
-                            } else {
-                                eprintln!(
-                                    "Warning: Could not get relative path for {}",
-                                    path.display()
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    if !exclude_dirs.is_empty() {
+        println!("Excluding directories: {:?}", exclude_dirs);
     }
 
-    // Sort by relative path for consistent output
-    found_files.sort_by(|a, b| a.0.cmp(&b.0));
+    // Initialize gitignore manager if needed
+    let gitignore_manager = if args.respect_gitignore {
+        match GitignoreManager::discover_and_load(
+            &valid_input_dirs,
+            &args.additional_gitignore_files,
+        ) {
+            Ok(manager) => {
+                println!("Gitignore support enabled");
+                Some(manager)
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to initialize gitignore manager: {}", e);
+                eprintln!("Continuing without gitignore support...");
+                None
+            }
+        }
+    } else {
+        println!("Gitignore support disabled");
+        None
+    };
+
+    // Collect files using the new system
+    let found_files = if let Some(ref manager) = gitignore_manager {
+        collect_files_with_gitignore(&valid_input_dirs, &extensions, &exclude_dirs, manager, true)
+    } else {
+        collect_files_with_gitignore(
+            &valid_input_dirs,
+            &extensions,
+            &exclude_dirs,
+            &GitignoreManager::new(),
+            false,
+        )
+    };
 
     let output_file_handle = File::create(output_file)?;
     let mut writer = BufWriter::new(output_file_handle);
@@ -258,11 +213,11 @@ fn main() -> io::Result<()> {
 
         let header = format!("## {}\n\n", display_path);
         let code_start = format!("```{}\n", ext);
-        
+
         // Count tokens for markdown formatting
         token_counter.add_text(&header);
         token_counter.add_text(&code_start);
-        
+
         writeln!(writer, "## {}\n", display_path)?;
         writeln!(writer, "```{}", ext)?;
 
@@ -277,7 +232,8 @@ fn main() -> io::Result<()> {
                         writeln!(writer)?;
                     }
                 } else {
-                    let error_msg = "\nError: Could not read file content (e.g., binary or non-UTF-8)";
+                    let error_msg =
+                        "\nError: Could not read file content (e.g., binary or non-UTF-8)";
                     eprintln!(
                         "Warning: Failed to read file content (possibly not UTF-8): {}",
                         abs_path.display()

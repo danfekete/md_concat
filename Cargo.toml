@@ -9,3 +9,5 @@ edition = "2024"
 [dependencies]
 clap = { version = "4.4", features = ["derive"] } # Use the latest version available
 walkdir = "2.4" # Useful for directory traversal
+ignore = "0.4" # Provides .gitignore parsing and matching
+globset = "0.4" # For glob pattern matching

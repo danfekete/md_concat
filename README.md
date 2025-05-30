@@ -2,13 +2,13 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A command-line utility written in Rust to recursively search directories for files with specified extensions, sort them, and concatenate their contents into a single Markdown file. Each file's content is placed within a fenced code block, labeled with the file's relative path.
+A command-line utility written in Rust to recursively search directories for files with specified extensions, sort them, and concatenate their contents into a single Markdown file. Each file's content is placed within a fenced code block, labeled with the file's relative path. The tool automatically respects `.gitignore` files to exclude unwanted files and provides comprehensive token count estimates for LLM usage.
 
 This tool is useful for:
 
 *   Creating a single context file of a project's source code for analysis or documentation.
 *   Providing large codebases as context to Large Language Models (LLMs) with **automatic token count estimates**.
-*   Generating simple code snapshots with **memory-efficient processing**.
+*   Generating simple code snapshots with **memory-efficient processing** and **automatic gitignore filtering**.
 *   **Analyzing token usage** before submitting to different LLM providers.
 
 ## ✨ Features
@@ -17,6 +17,11 @@ This tool is useful for:
 *   **Recursive Directory Search:** Scans the specified directories and all their subdirectories.
 *   **Extension Filtering:** Includes only files matching the provided list of extensions (e.g., `.c`, `.h`, `.rs`, `.py`).
 *   **Directory Exclusion:** Allows specifying directory names (like `target`, `.git`, `node_modules`) to exclude from the search.
+*   **Gitignore Support:** Automatically respects `.gitignore` files found in input directories:
+    *   **Automatic Discovery:** Finds and applies `.gitignore` files in any input directory
+    *   **Hierarchical Rules:** Properly handles gitignore inheritance from parent directories
+    *   **Additional Gitignore Files:** Supports specifying extra gitignore files with `--additional-gitignore`
+    *   **Toggleable:** Can be disabled with `--no-gitignore` flag
 *   **Token Count Estimation:** Automatically estimates token counts for different LLM providers:
     *   **GPT-style** (~4 chars/token) - OpenAI models
     *   **Claude-style** (~3.5 chars/token) - Anthropic models  
@@ -82,6 +87,15 @@ md_concat <OUTPUT_FILE> --extensions=<EXT1,EXT2,...> [OPTIONS]
     *   Common usage: `--exclude-dirs=.git,target,node_modules,vendor`
     *   Example: `--exclude-dirs=build,dist`
 
+*   `--no-gitignore`: Disables automatic `.gitignore` file detection and filtering.
+    *   By default, the tool will find and respect `.gitignore` files in input directories.
+    *   Use this flag to ignore `.gitignore` rules and include all files matching other criteria.
+
+*   `--additional-gitignore=<FILE1,FILE2,...>`: A comma-separated list of additional `.gitignore` files to consider.
+    *   These files will be applied in addition to any automatically discovered `.gitignore` files.
+    *   Useful for applying custom ignore rules or using `.gitignore` files from different locations.
+    *   Example: `--additional-gitignore=.myignore,../shared.gitignore`
+
 *   `-h, --help`: Print help information.
 *   `-V, --version`: Print version information.
 
@@ -121,6 +135,22 @@ md_concat <OUTPUT_FILE> --extensions=<EXT1,EXT2,...> [OPTIONS]
     Word-based: ~9,165 tokens
     ```
 
+5.  **Using gitignore functionality to automatically exclude files:**
+    ```bash
+    ./target/release/md_concat project.md --extensions=py,js,html --input-dirs=src,frontend
+    ```
+    This will automatically respect any `.gitignore` files found in `src/` or `frontend/` directories.
+
+6.  **Disable gitignore and include all files (useful for comprehensive analysis):**
+    ```bash
+    ./target/release/md_concat complete_project.md --extensions=rs --no-gitignore
+    ```
+
+7.  **Use custom gitignore files for specialized filtering:**
+    ```bash
+    ./target/release/md_concat filtered.md --extensions=cpp,h --additional-gitignore=.buildignore,tests/.testignore
+    ```
+
 ## 📊 Token Count Estimates
 
 The tool automatically provides token count estimates for different LLM providers after processing:
@@ -133,6 +163,35 @@ The tool automatically provides token count estimates for different LLM provider
 - **Word-based**: Alternative estimation based on average word length (~5 chars/token)
 
 This helps you understand the scope of your codebase before submitting to LLM providers and plan accordingly for token limits.
+
+## 🚫 Gitignore Support
+
+The tool includes comprehensive `.gitignore` support to automatically exclude files that shouldn't be included in your concatenated output:
+
+### Automatic Discovery
+- Scans all input directories for `.gitignore` files
+- Applies gitignore rules hierarchically (parent directory rules apply to subdirectories)
+- Respects the standard gitignore pattern syntax
+
+### How It Works
+1. **Discovery Phase**: Finds all `.gitignore` files in input directories and subdirectories
+2. **Rule Compilation**: Parses and compiles gitignore patterns for efficient matching
+3. **File Filtering**: During traversal, checks each file against applicable gitignore rules
+4. **Hierarchical Application**: Files are checked against the most specific gitignore rules that apply
+
+### Integration with Other Filters
+Gitignore filtering works alongside other filtering mechanisms:
+1. **Extension filtering** (`--extensions`) - Only files with specified extensions are considered
+2. **Directory exclusion** (`--exclude-dirs`) - Explicitly excluded directories are skipped
+3. **Gitignore filtering** - Files matching gitignore patterns are excluded
+4. **Deduplication** - Ensures the same file isn't included multiple times
+
+### Control Options
+- **Enabled by default**: Gitignore support is active unless explicitly disabled
+- **`--no-gitignore`**: Completely disables gitignore processing for maximum inclusion
+- **`--additional-gitignore`**: Add custom gitignore files beyond those automatically discovered
+- **Graceful degradation**: If gitignore parsing fails, continues with warnings
+
 
 ## 🤝 Contributing
 
